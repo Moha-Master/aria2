@@ -1,102 +1,119 @@
-name: build
+name: Build Aria2c
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        os: [ubuntu-22.04, macos-14]
-        compiler: [gcc, clang]
-        crypto: [openssl, gnutls]
-        bittorrent: [with-bt, without-bt]
-        exclude:
-        - os: macos-14
-          crypto: gnutls
-        - crypto: openssl
-          bittorrent: without-bt
-
-    runs-on: ${{ matrix.os }}
-
+  build-linux:
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Linux setup
-      if: runner.os == 'Linux'
+      with:
+        repository: moha-master/aria2
+        ref: master
+    
+    - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install \
-          g++-12 \
-          clang-15 \
-          autoconf \
-          automake \
-          autotools-dev \
-          autopoint \
-          libtool \
-          pkg-config \
-          libssl-dev \
-          libgnutls28-dev \
-          libc-ares-dev \
-          zlib1g-dev \
-          libsqlite3-dev \
-          libssh2-1-dev \
-          libcppunit-dev
-    - name: MacOS setup
-      if: runner.os == 'macOS'
-      run: |
-        brew install cppunit gettext openssl libssh2 c-ares sqlite3 \
-          autoconf automake pkg-config libtool
-    - name: Setup clang (Linux)
-      if: runner.os == 'Linux' && matrix.compiler == 'clang'
-      run: |
-        echo 'CC=clang-15' >> $GITHUB_ENV
-        echo 'CXX=clang++-15' >> $GITHUB_ENV
-    - name: Setup clang (MacOS)
-      if: runner.os == 'macOS' && matrix.compiler == 'clang'
-      run: |
-        echo 'CC=clang' >> $GITHUB_ENV
-        echo 'CXX=clang++' >> $GITHUB_ENV
-    - name: Setup gcc (Linux)
-      if: runner.os == 'Linux' && matrix.compiler == 'gcc'
-      run: |
-        echo 'CC=gcc-12' >> $GITHUB_ENV
-        echo 'CXX=g++-12' >> $GITHUB_ENV
-    - name: Setup gcc (MacOS)
-      if: runner.os == 'macOS' && matrix.compiler == 'gcc'
-      run: |
-        echo 'CC=gcc' >> $GITHUB_ENV
-        echo 'CXX=g++' >> $GITHUB_ENV
-    - name: Libtool
+        sudo apt-get install -y build-essential autoconf automake libtool \
+          pkg-config libcppunit-dev libssl-dev zlib1g-dev \
+          gettext autopoint
+    
+    - name: Configure and build Linux
       run: |
         autoreconf -i
-    - name: Setup compiler flags
+        ./configure --prefix=/usr/local
+        make -j$(nproc)
+    
+    - name: Strip and package Linux binary
       run: |
-        asanflags="-fsanitize=address,undefined -fno-sanitize-recover=undefined"
+        mkdir -p artifacts/linux
+        cp src/aria2c artifacts/linux/
+        strip artifacts/linux/aria2c
+    
+    - name: Upload Linux binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: aria2-linux
+        path: artifacts/linux/aria2c
 
-        CPPFLAGS="$asanflags -g3"
-        LDFLAGS="$asanflags"
-
-        echo 'CPPFLAGS='"$CPPFLAGS" >> $GITHUB_ENV
-        echo 'LDFLAGS='"$LDFLAGS" >> $GITHUB_ENV
-    - name: Disable BitTorrent
-      if: matrix.bittorrent == 'without-bt'
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: moha-master/aria2
+        ref: master
+    
+    - name: Set up cross-compilation environment
       run: |
-        FEATURE_FLAGS="$FEATURE_FLAGS --disable-bittorrent"
-
-        echo 'FEATURE_FLAGS='"$FEATURE_FLAGS" >> $GITHUB_ENV
-    - name: Configure autotools (Linux, gnutls)
-      if: runner.os == 'Linux' && matrix.crypto == 'gnutls'
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          make binutils autoconf automake autotools-dev libtool \
+          patch ca-certificates \
+          pkg-config git curl dpkg-dev gcc-mingw-w64 g++-mingw-w64 \
+          autopoint libcppunit-dev libxml2-dev libgcrypt20-dev lzip \
+          python3-docutils
+        
+        export HOST=x86_64-w64-mingw32
+        export PREFIX=/usr/local/$HOST
+        
+        mkdir -p deps && cd deps
+        curl -L -O https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz
+        curl -L -O https://github.com/libexpat/libexpat/releases/download/R_2_5_0/expat-2.5.0.tar.bz2
+        curl -L -O https://www.sqlite.org/2023/sqlite-autoconf-3430100.tar.gz
+        curl -L -O https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+        curl -L -O https://github.com/c-ares/c-ares/releases/download/cares-1_19_1/c-ares-1.19.1.tar.gz
+        curl -L -O https://libssh2.org/download/libssh2-1.11.0.tar.bz2
+        
+        tar xf gmp-6.3.0.tar.xz && cd gmp-6.3.0
+        ./configure --disable-shared --enable-static --prefix=$PREFIX \
+          --host=$HOST --disable-cxx --enable-fat \
+          CFLAGS="-mtune=generic -O2 -g0"
+        make -j$(nproc) install && cd ..
+        
+        tar xf expat-2.5.0.tar.bz2 && cd expat-2.5.0
+        ./configure --disable-shared --enable-static --prefix=$PREFIX \
+          --host=$HOST --build=$(dpkg-architecture -qDEB_BUILD_GNU_TYPE)
+        make -j$(nproc) install && cd ..
+        
+        tar xf sqlite-autoconf-3430100.tar.gz && cd sqlite-autoconf-3430100
+        ./configure --disable-shared --enable-static --prefix=$PREFIX \
+          --host=$HOST --build=$(dpkg-architecture -qDEB_BUILD_GNU_TYPE)
+        make -j$(nproc) install && cd ..
+        
+        tar xf zlib-1.3.1.tar.gz && cd zlib-1.3.1
+        CC=$HOST-gcc AR=$HOST-ar LD=$HOST-ld RANLIB=$HOST-ranlib \
+        STRIP=$HOST-strip ./configure --prefix=$PREFIX --static
+        make -j$(nproc) install && cd ..
+        
+        tar xf c-ares-1.19.1.tar.gz && cd c-ares-1.19.1
+        ./configure --disable-shared --enable-static --without-random \
+          --prefix=$PREFIX --host=$HOST \
+          --build=$(dpkg-architecture -qDEB_BUILD_GNU_TYPE) LIBS="-lws2_32"
+        make -j$(nproc) install && cd ..
+        
+        tar xf libssh2-1.11.0.tar.bz2 && cd libssh2-1.11.0
+        ./configure --disable-shared --enable-static --prefix=$PREFIX \
+          --host=$HOST --build=$(dpkg-architecture -qDEB_BUILD_GNU_TYPE) \
+          LIBS="-lws2_32"
+        make -j$(nproc) install && cd ../..
+    
+    - name: Build aria2 for Windows
       run: |
-        ./configure --with-gnutls --without-openssl $FEATURE_FLAGS
-    - name: Configure autotools (Linux, openssl)
-      if: runner.os == 'Linux' && matrix.crypto == 'openssl'
-      run: |
-        ./configure --without-gnutls --with-openssl $FEATURE_FLAGS
-    - name: Configure autotools (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        ./configure \
-          --without-openssl --without-gnutls --with-appletls \
-          --disable-nls
-    - name: Build aria2
-      run: |
-        make -j"$(nproc 2> /dev/null || sysctl -n hw.ncpu)" check
+        export HOST=x86_64-w64-mingw32
+        export PREFIX=/usr/local/$HOST
+        
+        autoreconf -i
+        ./mingw-config
+        make -j$(nproc)
+        $HOST-strip src/aria2c.exe
+        
+        mkdir -p artifacts/windows
+        cp src/aria2c.exe artifacts/windows/
+    
+    - name: Upload Windows binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: aria2-windows
+        path: artifacts/windows/aria2c.exe
