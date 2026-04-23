@@ -1,32 +1,27 @@
-name: build
+name: manual-build-release
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  build-native:
     strategy:
       matrix:
         os: [ubuntu-22.04, macos-14]
-        compiler: [gcc, clang]
-        crypto: [openssl, gnutls]
-        bittorrent: [with-bt, without-bt]
-        exclude:
-        - os: macos-14
-          crypto: gnutls
-        - crypto: openssl
-          bittorrent: without-bt
-
     runs-on: ${{ matrix.os }}
-
     steps:
     - uses: actions/checkout@v6
+      with:
+        ref: master
     - name: Linux setup
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install \
+        sudo apt-get install -y \
           g++-12 \
-          clang-15 \
           autoconf \
           automake \
           autotools-dev \
@@ -34,69 +29,106 @@ jobs:
           libtool \
           pkg-config \
           libssl-dev \
-          libgnutls28-dev \
           libc-ares-dev \
           zlib1g-dev \
           libsqlite3-dev \
-          libssh2-1-dev \
-          libcppunit-dev
-    - name: MacOS setup
+          libssh2-1-dev
+        echo 'CC=gcc-12' >> "$GITHUB_ENV"
+        echo 'CXX=g++-12' >> "$GITHUB_ENV"
+    - name: macOS setup
       if: runner.os == 'macOS'
       run: |
-        brew install cppunit gettext openssl libssh2 c-ares sqlite3 \
-          autoconf automake pkg-config libtool
-    - name: Setup clang (Linux)
-      if: runner.os == 'Linux' && matrix.compiler == 'clang'
-      run: |
-        echo 'CC=clang-15' >> $GITHUB_ENV
-        echo 'CXX=clang++-15' >> $GITHUB_ENV
-    - name: Setup clang (MacOS)
-      if: runner.os == 'macOS' && matrix.compiler == 'clang'
-      run: |
-        echo 'CC=clang' >> $GITHUB_ENV
-        echo 'CXX=clang++' >> $GITHUB_ENV
-    - name: Setup gcc (Linux)
-      if: runner.os == 'Linux' && matrix.compiler == 'gcc'
-      run: |
-        echo 'CC=gcc-12' >> $GITHUB_ENV
-        echo 'CXX=g++-12' >> $GITHUB_ENV
-    - name: Setup gcc (MacOS)
-      if: runner.os == 'macOS' && matrix.compiler == 'gcc'
-      run: |
-        echo 'CC=gcc' >> $GITHUB_ENV
-        echo 'CXX=g++' >> $GITHUB_ENV
-    - name: Libtool
+        brew install gettext openssl libssh2 c-ares sqlite3 autoconf automake pkg-config libtool
+        echo 'CC=clang' >> "$GITHUB_ENV"
+        echo 'CXX=clang++' >> "$GITHUB_ENV"
+    - name: Build native aria2
       run: |
         autoreconf -i
-    - name: Setup compiler flags
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          ./configure --without-gnutls --with-openssl
+        else
+          ./configure --without-openssl --without-gnutls --with-appletls --disable-nls
+        fi
+        make -j"$(nproc 2> /dev/null || sysctl -n hw.ncpu)"
+    - name: Package native artifact
+      shell: bash
       run: |
-        asanflags="-fsanitize=address,undefined -fno-sanitize-recover=undefined"
+        mkdir -p out
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          cp src/aria2c out/aria2c-linux-x86_64
+          tar -czf out/aria2c-linux-x86_64.tar.gz -C out aria2c-linux-x86_64
+        else
+          cp src/aria2c out/aria2c-macos-arm64
+          tar -czf out/aria2c-macos-arm64.tar.gz -C out aria2c-macos-arm64
+        fi
+    - name: Upload native artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: aria2-${{ runner.os }}
+        path: out/*.tar.gz
 
-        CPPFLAGS="$asanflags -g3"
-        LDFLAGS="$asanflags"
+  build-windows:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: master
+    - name: Build Windows binary via Docker
+      run: |
+        docker build -f Dockerfile.mingw \
+          --build-arg HOST=x86_64-w64-mingw32 \
+          --build-arg ARIA2_VERSION=master \
+          --build-arg ARIA2_REF=refs/heads/master \
+          -t aria2-mingw .
+        cid="$(docker create aria2-mingw)"
+        docker cp "$cid:/aria2/src/aria2c.exe" ./aria2c-windows-x86_64.exe
+        docker rm "$cid"
+        zip -j aria2c-windows-x86_64.zip aria2c-windows-x86_64.exe
+    - name: Upload Windows artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: aria2-windows
+        path: aria2c-windows-x86_64.zip
 
-        echo 'CPPFLAGS='"$CPPFLAGS" >> $GITHUB_ENV
-        echo 'LDFLAGS='"$LDFLAGS" >> $GITHUB_ENV
-    - name: Disable BitTorrent
-      if: matrix.bittorrent == 'without-bt'
+  build-android:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: master
+    - name: Build Android binary via Docker
       run: |
-        FEATURE_FLAGS="$FEATURE_FLAGS --disable-bittorrent"
+        docker build -f Dockerfile.android --build-arg ARIA2_VERSION=master -t aria2-android .
+        cid="$(docker create aria2-android)"
+        docker cp "$cid:/root/build/aria2/src/aria2c" ./aria2c-android-aarch64
+        docker rm "$cid"
+        tar -czf aria2c-android-aarch64.tar.gz aria2c-android-aarch64
+    - name: Upload Android artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: aria2-android
+        path: aria2c-android-aarch64.tar.gz
 
-        echo 'FEATURE_FLAGS='"$FEATURE_FLAGS" >> $GITHUB_ENV
-    - name: Configure autotools (Linux, gnutls)
-      if: runner.os == 'Linux' && matrix.crypto == 'gnutls'
+  release:
+    needs: [build-native, build-windows, build-android]
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Download all build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: dist
+        merge-multiple: true
+    - name: Generate release date
+      id: meta
       run: |
-        ./configure --with-gnutls --without-openssl $FEATURE_FLAGS
-    - name: Configure autotools (Linux, openssl)
-      if: runner.os == 'Linux' && matrix.crypto == 'openssl'
-      run: |
-        ./configure --without-gnutls --with-openssl $FEATURE_FLAGS
-    - name: Configure autotools (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        ./configure \
-          --without-openssl --without-gnutls --with-appletls \
-          --disable-nls
-    - name: Build aria2
-      run: |
-        make -j"$(nproc 2> /dev/null || sysctl -n hw.ncpu)" check
+        release_date="$(date -u '+%y.%-m.%-d')"
+        suffix="$(printf '%s' "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(date -u +%s%N)" | sha256sum | cut -c1-6)"
+        release_name="${release_date}-${suffix}"
+        echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+    - name: Publish GitHub Release
+      uses: ncipollo/release-action@v1
+      with:
+        tag: ${{ steps.meta.outputs.release_name }}
+        name: ${{ steps.meta.outputs.release_name }}
+        artifacts: "dist/*"
+        generateReleaseNotes: true
