@@ -1,0 +1,53 @@
+# Dockerfile to build a fully static aria2 Linux binary that runs on any
+# x86-64 CPU (baseline level, a.k.a. x86-64-v1), for old devices such as
+# Celeron J1900 (Bay Trail, supports SSE4.2 but no AVX/AVX2/BMI).
+#
+# Background: Since Ubuntu 26.04 the public cloud images (including GitHub
+# Actions runner images) ship the amd64v3 architecture variant.  Building
+# with ARIA2_STATIC=yes on such a system statically links libc/OpenSSL/etc.
+# compiled for x86-64-v3, which bakes an unconditional v3 requirement into
+# the resulting binary (see GNU_PROPERTY_X86_ISA_1_NEEDED in
+# .note.gnu.property) and causes SIGILL on pre-AVX2 CPUs.
+#
+# Ubuntu 24.04's archive is still built for the original x86-64 baseline,
+# so we build the compatibility binary there instead.
+#
+# $ docker build -f Dockerfile.linux -t aria2-linux-compat .
+#
+# After successful build, the binary is located at /aria2/src/aria2c.
+# Extract it with:
+#
+# $ cid="$(docker create aria2-linux-compat)"
+# $ docker cp "$cid:/aria2/src/aria2c" ./aria2c-linux-x86_64-compatible
+# $ docker rm "$cid"
+
+FROM ubuntu:24.04
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND="noninteractive" \
+    apt-get install -y --no-install-recommends \
+        build-essential binutils autoconf automake autotools-dev autopoint libtool \
+        pkg-config ca-certificates file \
+        libssl-dev \
+        libxml2-dev \
+        libc-ares-dev \
+        zlib1g-dev \
+        libzstd-dev \
+        liblzma-dev \
+        libsqlite3-dev \
+        libssh2-1-dev
+
+COPY . /aria2
+
+RUN cd /aria2 && \
+    sed -i 's/AM_GNU_GETTEXT_VERSION(\[0.19\])/AM_GNU_GETTEXT_REQUIRE_VERSION([0.21])/' configure.ac && \
+    autoreconf -i && \
+    ./configure ARIA2_STATIC=yes \
+        --without-gnutls --with-openssl \
+        --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt \
+        CFLAGS="-O2 -march=x86-64 -mtune=generic" \
+        CXXFLAGS="-O2 -march=x86-64 -mtune=generic" && \
+    make -j"$(nproc)" && \
+    strip src/aria2c && \
+    file src/aria2c | grep -q 'statically linked' && \
+    ! readelf -nW src/aria2c | grep -E 'x86-64-v[34]'

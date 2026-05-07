@@ -16,9 +16,14 @@ ENV LOCAL_DIR /local
 ENV TOOL_BIN_DIR /tools/arm-bcm2708/gcc-linaro-$HOST-raspbian-x64/bin
 ENV PATH ${TOOL_BIN_DIR}:$PATH
 
+# 下载失败重试：所有下载先落到临时文件再解压（不能在管道里重试——curl 重试
+# 会重新输出数据，而上次已流出的半截数据会把 tar 搞坏）。
+# 注意：本镜像 ubuntu:trusty 自带 curl 7.35，不支持 --retry-all-errors（需
+# >= 7.71），这里只能用旧版就有的参数；其 --retry 也仅覆盖瞬时 HTTP/FTP 错误。
 RUN mkdir $LOCAL_DIR && mkdir zlib && cd zlib && \
-   curl -Ls -o - 'http://zlib.net/zlib-1.2.11.tar.gz'  | \
-        tar xzf - --strip-components=1 && \
+   curl -fLs --retry 5 --retry-delay 2 --connect-timeout 30 -o zlib-1.2.11.tar.gz 'http://zlib.net/zlib-1.2.11.tar.gz' && \
+        tar xzf zlib-1.2.11.tar.gz --strip-components=1 && \
+        rm -f zlib-1.2.11.tar.gz && \
    prefix=${LOCAL_DIR} \
    CC=$HOST-gcc \
    STRIP=$HOST-strip \
@@ -31,8 +36,9 @@ RUN mkdir $LOCAL_DIR && mkdir zlib && cd zlib && \
    make -s install
 
 RUN mkdir -p expat && cd expat && \
-    curl -Ls -o - 'https://sourceforge.net/projects/expat/files/expat/2.2.0/expat-2.2.0.tar.bz2/download' | \
-        tar xjf - --strip-components=1 && \
+    curl -fLs --retry 5 --retry-delay 2 --connect-timeout 30 -o expat-2.2.0.tar.bz2 'https://sourceforge.net/projects/expat/files/expat/2.2.0/expat-2.2.0.tar.bz2/download' && \
+        tar xjf expat-2.2.0.tar.bz2 --strip-components=1 && \
+        rm -f expat-2.2.0.tar.bz2 && \
     ./configure \
         --host=$HOST \
         --build=`dpkg-architecture -qDEB_BUILD_GNU_TYPE` \
@@ -43,8 +49,9 @@ RUN mkdir -p expat && cd expat && \
     make -s install
 
 RUN mkdir c-ares && cd c-ares && \
-    curl -Ls -o - 'http://c-ares.haxx.se/download/c-ares-1.10.0.tar.gz' | \
-        tar xzf - --strip-components=1 && \
+    curl -fLs --retry 5 --retry-delay 2 --connect-timeout 30 -o c-ares-1.10.0.tar.gz 'http://c-ares.haxx.se/download/c-ares-1.10.0.tar.gz' && \
+        tar xzf c-ares-1.10.0.tar.gz --strip-components=1 && \
+        rm -f c-ares-1.10.0.tar.gz && \
     ./configure \
         --host=$HOST \
         --build=`dpkg-architecture -qDEB_BUILD_GNU_TYPE` \
@@ -55,8 +62,10 @@ RUN mkdir c-ares && cd c-ares && \
     make -s install
 
 RUN mkdir gmp && cd gmp && \
-    curl -Ls -o - 'https://gmplib.org/download/gmp/gmp-6.1.0.tar.lz' | \
-        lzip -d | tar xf - --strip-components=1 && \
+    curl -fLs --retry 5 --retry-delay 2 --connect-timeout 30 -o gmp-6.1.0.tar.lz 'https://gmplib.org/download/gmp/gmp-6.1.0.tar.lz' && \
+        lzip -d gmp-6.1.0.tar.lz && \
+        tar xf gmp-6.1.0.tar --strip-components=1 && \
+        rm -f gmp-6.1.0.tar && \
     ./configure \
         --disable-shared \
         --enable-static \
@@ -68,8 +77,9 @@ RUN mkdir gmp && cd gmp && \
     make -s install
 
 RUN mkdir sqlite && cd sqlite && \
-    curl -Ls -o - 'https://www.sqlite.org/2016/sqlite-autoconf-3100100.tar.gz' | \
-        tar xzf - --strip-components=1 && \
+    curl -fLs --retry 5 --retry-delay 2 --connect-timeout 30 -o sqlite-autoconf-3100100.tar.gz 'https://www.sqlite.org/2016/sqlite-autoconf-3100100.tar.gz' && \
+        tar xzf sqlite-autoconf-3100100.tar.gz --strip-components=1 && \
+        rm -f sqlite-autoconf-3100100.tar.gz && \
     ./configure \
         --disable-shared \
         --enable-static \
@@ -80,9 +90,11 @@ RUN mkdir sqlite && cd sqlite && \
     make -s install
 
 RUN mkdir aria && cd aria && \
-    curl -s 'https://api.github.com/repos/aria2/aria2/releases/latest' | \
-        grep 'browser_download_url.*[0-9]\.tar\.bz2' | sed -e 's/^[[:space:]]*//' | \
-        cut -d ' ' -f 2 | xargs -I % curl -Ls -o - '%' | tar xjf - --strip-components=1 && \
+    curl -fLs --retry 5 --retry-delay 2 --connect-timeout 30 -o releases.json 'https://api.github.com/repos/aria2/aria2/releases/latest' && \
+        grep 'browser_download_url.*[0-9]\.tar\.bz2' releases.json | sed -e 's/^[[:space:]]*//' | \
+        cut -d ' ' -f 2 | xargs -I % curl -fLs --retry 5 --retry-delay 2 --connect-timeout 30 -o aria2.tar.bz2 '%' && \
+        rm -f releases.json && \
+    tar xjf aria2.tar.bz2 --strip-components=1 && rm -f aria2.tar.bz2 && \
     ./configure \
         --host=$HOST \
         --build=`dpkg-architecture -qDEB_BUILD_GNU_TYPE` \

@@ -36,12 +36,13 @@ ENV AR=$TOOLCHAIN/bin/llvm-ar \
     PREFIX=/root/usr/local
 
 # Download NDK
-RUN curl -L -O https://dl.google.com/android/repository/android-ndk-$NDK_VERSION-linux.zip && \
+# 下载失败重试：CI 中网络偶发超时曾导致需要手动重跑，所有下载统一走这份参数。
+# -f 让 HTTP 错误立即失败而不是把错误页存成源码包；--retry-all-errors 要求
+# curl >= 7.71，本镜像 ubuntu:22.04 自带 7.81，满足。
+ENV CURL="curl -fL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 30 -O"
+RUN $CURL https://dl.google.com/android/repository/android-ndk-$NDK_VERSION-linux.zip && \
    unzip -q android-ndk-$NDK_VERSION-linux.zip && \
    rm android-ndk-$NDK_VERSION-linux.zip
-
-# aria2 version
-ARG ARIA2_VERSION=master
 
 # Library versions
 ENV OPENSSL_VERSION=1.1.1w
@@ -66,7 +67,7 @@ ENV LIBSSH2_URI=https://libssh2.org/download/$LIBSSH2_ARCHIVE
 
 # Build OpenSSL
 WORKDIR /root/build
-RUN curl -L -O $OPENSSL_URI && tar xf $OPENSSL_ARCHIVE && rm $OPENSSL_ARCHIVE
+RUN $CURL $OPENSSL_URI && tar xf $OPENSSL_ARCHIVE && rm $OPENSSL_ARCHIVE
 
 WORKDIR /root/build/openssl-$OPENSSL_VERSION
 RUN export ANDROID_NDK_HOME=$NDK PATH=$TOOLCHAIN/bin:$PATH && \
@@ -75,7 +76,7 @@ RUN export ANDROID_NDK_HOME=$NDK PATH=$TOOLCHAIN/bin:$PATH && \
 
 # Build libexpat
 WORKDIR /root/build
-RUN curl -L -O $LIBEXPAT_URI && tar xf $LIBEXPAT_ARCHIVE && rm $LIBEXPAT_ARCHIVE
+RUN $CURL $LIBEXPAT_URI && tar xf $LIBEXPAT_ARCHIVE && rm $LIBEXPAT_ARCHIVE
 
 WORKDIR /root/build/expat-$LIBEXPAT_VERSION
 RUN ./configure \
@@ -87,7 +88,7 @@ RUN ./configure \
 
 # Build zlib
 WORKDIR /root/build
-RUN curl -L -O $ZLIB_URI && tar xf $ZLIB_ARCHIVE && rm $ZLIB_ARCHIVE
+RUN $CURL $ZLIB_URI && tar xf $ZLIB_ARCHIVE && rm $ZLIB_ARCHIVE
 
 WORKDIR /root/build/zlib-$ZLIB_VERSION
 RUN ./configure \
@@ -99,7 +100,7 @@ RUN ./configure \
 
 # Build c-ares
 WORKDIR /root/build
-RUN curl -L -O $CARES_URI && tar xf $CARES_ARCHIVE && rm $CARES_ARCHIVE
+RUN $CURL $CARES_URI && tar xf $CARES_ARCHIVE && rm $CARES_ARCHIVE
 
 WORKDIR /root/build/c-ares-$CARES_VERSION
 RUN ./configure \
@@ -111,7 +112,7 @@ RUN ./configure \
 
 # Build libssh2
 WORKDIR /root/build
-RUN curl -L -O $LIBSSH2_URI && tar xf $LIBSSH2_ARCHIVE && rm $LIBSSH2_ARCHIVE
+RUN $CURL $LIBSSH2_URI && tar xf $LIBSSH2_ARCHIVE && rm $LIBSSH2_ARCHIVE
 
 WORKDIR /root/build/libssh2-$LIBSSH2_VERSION
 RUN ./configure \
@@ -122,9 +123,7 @@ RUN ./configure \
     make -j$(nproc) install
 
 # Build aria2
-WORKDIR /root/build
-RUN git clone -b $ARIA2_VERSION --depth 1 https://github.com/aria2/aria2
-
+COPY . /root/build/aria2
 WORKDIR /root/build/aria2
 RUN autoreconf -i && \
     ./configure \
