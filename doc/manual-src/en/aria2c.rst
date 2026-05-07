@@ -183,7 +183,7 @@ HTTP/FTP/SFTP Options
 .. option:: -x, --max-connection-per-server=<NUM>
 
   The maximum number of connections to one server for each download.
-  Default: ``1``
+  Default: ``16``
 
 .. option:: --max-file-not-found=<NUM>
 
@@ -210,7 +210,7 @@ HTTP/FTP/SFTP Options
   using 2 sources(if :option:`--split <-s>` >= 2, of course).  If SIZE is 15M,
   since 2*15M > 20MiB, aria2 does not split file and download it using
   1 source.  You can append ``K`` or ``M`` (1K = 1024, 1M = 1024K).
-  Possible Values: ``1M`` -``1024M`` Default: ``20M``
+  Possible Values: ``1K`` -* Default: ``256K``
 
 
 .. option:: --netrc-path=<FILE>
@@ -323,7 +323,7 @@ HTTP/FTP/SFTP Options
   connections to the same host is restricted by the
   :option:`--max-connection-per-server <-x>` option.
   See also the :option:`--min-split-size <-k>` option.
-  Default: ``5``
+  Default: ``16``
 
   .. note::
 
